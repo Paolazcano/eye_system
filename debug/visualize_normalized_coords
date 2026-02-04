@@ -1,0 +1,91 @@
+# CÓDIGO DE PRUEBA PARA VISUALIZAR EN TIEMPO REAL LAS COORDENADAS NORMALIZADAS
+
+#INTERPRETACIÓN DEL PLANO:
+# Ojo a la derecha → punto se mueve a la derecha
+# Ojo arriba → punto sube
+# Ojo quieto → punto cerca del centro
+# Trayectorias suaves
+
+import cv2
+import numpy as np
+from ultralytics import YOLO
+
+# Cargar modelo YOLO
+model = YOLO("models/yolo/eye_detector/weights/best.pt")
+
+# Abrir cámara
+cap = cv2.VideoCapture(0)
+
+# Imagen del plano XY
+plane_size = 400
+plane = np.ones((plane_size, plane_size, 3), dtype=np.uint8) * 255
+center = plane_size // 2
+scale = 150  # amplificación visual
+
+def normalize(cx_iris, cy_iris, eye_box):
+    x1, y1, x2, y2 = eye_box
+    cx_eye = (x1 + x2) / 2
+    cy_eye = (y1 + y2) / 2
+    w_eye = x2 - x1
+    h_eye = y2 - y1
+
+    cx_n = (cx_iris - cx_eye) / w_eye
+    cy_n = (cy_iris - cy_eye) / h_eye
+
+    return cx_n, cy_n
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    results = model(frame)[0]
+
+    eye_box = None
+    iris_center = None
+
+    for box in results.boxes:
+        cls = int(box.cls[0])
+        x1, y1, x2, y2 = box.xyxy[0]
+
+        if cls == 0:  # ojo
+            eye_box = (x1, y1, x2, y2)
+            cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0,255,0), 2)
+
+        if cls == 1:  # iris
+            cx = (x1 + x2) / 2
+            cy = (y1 + y2) / 2
+            iris_center = (cx, cy)
+            cv2.circle(frame, (int(cx), int(cy)), 4, (255,0,0), -1)
+
+    # Limpiar plano
+    plane[:] = 255
+    cv2.line(plane, (center, 0), (center, plane_size), (0,0,0), 1)
+    cv2.line(plane, (0, center), (plane_size, center), (0,0,0), 1)
+
+    if eye_box and iris_center:
+        cx_n, cy_n = normalize(iris_center[0], iris_center[1], eye_box)
+
+        px = int(center + cx_n * scale)
+        py = int(center + cy_n * scale)
+
+        cv2.circle(plane, (px, py), 6, (0,0,255), -1)
+
+        cv2.putText(
+            plane,
+            f"x={cx_n:.3f}, y={cy_n:.3f}",
+            (10, 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0,0,0),
+            1
+        )
+
+    cv2.imshow("YOLO Detection", frame)
+    cv2.imshow("Normalized Iris Coordinates", plane)
+
+    if cv2.waitKey(1) & 0xFF == 27:
+        break
+
+cap.release()
+cv2.destroyAllWindows()

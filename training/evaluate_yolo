@@ -1,0 +1,37 @@
+# CÓDIGO PARA EVALUAR LAS MÉTRICAS SURGIDAS DEL MODELO DE YOLO
+
+from ultralytics import YOLO
+
+def main():
+    model = YOLO("models/yolo/eye_detector/weights/best.pt")
+
+    metrics = model.val(
+        data="dataset/data.yaml",
+        workers=0
+    )
+
+    print("\n================ MÉTRICAS YOLO =================")
+    print(f"Precision (mP): {metrics.box.mp:.4f}")
+    print(f"Recall (mR):    {metrics.box.mr:.4f}")
+    print(f"mAP@50:         {metrics.box.map50:.4f}")
+    print(f"mAP@50-95:      {metrics.box.map:.4f}")
+    print("================================================")
+
+    print("\n========== MÉTRICAS POR CLASE ==========")
+
+    for i, cls in enumerate(metrics.names):
+        p, r, ap50, ap = metrics.box.class_result(i)
+
+        print(f"\nClase: {cls}")
+        print(f"  Precision: {p:.4f}")
+        print(f"  Recall:    {r:.4f}")
+        print(f"  AP@50:     {ap50:.4f}")
+        print(f"  AP@50-95:  {ap:.4f}")
+
+    print("\n========================================")
+
+if __name__ == "__main__":
+    main()
+
+
+

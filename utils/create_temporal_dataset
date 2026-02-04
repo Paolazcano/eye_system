@@ -1,0 +1,90 @@
+import cv2
+import os
+import numpy as np
+from ultralytics import YOLO
+
+# CONFIGURACIÓN
+VIDEO_ROOT = "dataset/videos"
+OUT_DIR = "dataset/temporal"
+WINDOW = 30
+STRIDE = 15
+
+CLASSES = {
+    "0_Cerrar": 0,
+    "1_Parpadear": 1,
+    "2_Izquierda": 2,
+    "3_Derecha": 3,
+    "4_Arriba": 4,
+    "5_Abajo": 5,
+    "6_Guiño": 6,
+    "7_Giro": 7
+}
+
+os.makedirs(OUT_DIR, exist_ok=True)
+
+model = YOLO("models/yolo/eye_detector/weights/best.pt")
+
+# NORMALIZACIÓN
+def normalize(cx_iris, cy_iris, eye_box):
+    x1, y1, x2, y2 = eye_box
+    cx_eye = (x1 + x2) / 2
+    cy_eye = (y1 + y2) / 2
+    w_eye = x2 - x1
+    h_eye = y2 - y1
+
+    if w_eye == 0 or h_eye == 0:
+        return None
+
+    cx_n = (cx_iris - cx_eye) / w_eye
+    cy_n = (cy_iris - cy_eye) / h_eye
+    return [cx_n, cy_n]
+
+# CREACIÓN DATASET
+X, y = [], []
+
+for folder, label in CLASSES.items():
+    folder_path = os.path.join(VIDEO_ROOT, folder)
+
+    for video in os.listdir(folder_path):
+        cap = cv2.VideoCapture(os.path.join(folder_path, video))
+        coords = []
+
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            r = model(frame)[0]
+            eye_box = iris = None
+
+            for b in r.boxes:
+                cls = int(b.cls[0].cpu().numpy())
+                x1, y1, x2, y2 = b.xyxy[0].cpu().numpy()
+
+                if cls == 0:      # ojo
+                    eye_box = (x1, y1, x2, y2)
+                elif cls == 1:    # iris
+                    iris = ((x1 + x2) / 2, (y1 + y2) / 2)
+
+
+            if eye_box and iris:
+                coord = normalize(iris[0], iris[1], eye_box)
+                if coord:
+                    coords.append(coord)
+
+        cap.release()
+
+        # ventanas temporales
+        for i in range(0, len(coords) - WINDOW, STRIDE):
+            X.append(coords[i:i + WINDOW])
+            y.append(label)
+
+X = np.array(X)
+y = np.array(y)
+
+np.save(f"{OUT_DIR}/X.npy", X)
+np.save(f"{OUT_DIR}/y.npy", y)
+
+print("✔ Dataset temporal creado")
+print("X:", X.shape)
+print("y:", y.shape)

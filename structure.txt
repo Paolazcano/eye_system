@@ -1,0 +1,30 @@
+eye_system/
+│
+├── dataset/
+│   ├── videos/
+│   ├── frames/
+│   ├── yolo/
+│   └── temporal/
+│
+├── models/
+│   ├── yolo/yolov8_eye.pt
+│   └── lstm/eye_seq.h5
+│
+├── training/
+│   ├── train_yolo.py
+│   ├── evaluate_yolo.py
+│   ├── train_lstm.py
+│   └── evaluate_lstm.py
+│
+├── inference/
+│   ├── realtime_pc.py
+│   ├── video_test.py
+│   └── raspberry.py
+│
+├── utils/
+│   ├── extract_frames.py
+│   ├── create_temporal_dataset.py
+│   └── normalize.py
+│
+├── tts/speaker.py
+└── main.py

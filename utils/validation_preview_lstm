@@ -1,0 +1,7 @@
+# CÓDIGO DE VALIDACIÓN A PARTIR DE create_temporal_dataset 
+# PARA ALIMENTAR A LSTM
+
+import numpy as np
+y = np.load("dataset/temporal/y.npy")
+unique, counts = np.unique(y, return_counts=True)
+print(dict(zip(unique, counts)))
