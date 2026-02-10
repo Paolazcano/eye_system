@@ -128,7 +128,7 @@ y = np.array(y)
 np.save(f"{OUT_DIR}/X.npy", X)
 np.save(f"{OUT_DIR}/y.npy", y)
 
-print("✔ Dataset temporal creado")
+print("Dataset temporal creado")
 print("X:", X.shape)
 print("y:", y.shape)
 
