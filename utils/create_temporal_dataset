@@ -1,17 +1,16 @@
-# CÓDIGO PARA NORMALIZACIÓN DE COORDENADAS DEL IRIS Y EL OJO, PREPROCESAMIENTO DE LSTM
-
 import cv2
 import os
 import numpy as np
 from ultralytics import YOLO
 
-# CONFIGURACIÓN
-VIDEO_ROOT = "dataset/videos"
-OUT_DIR = "dataset/temporal"
-WINDOW = 30 # Valor de la ventan = 30 fps
-STRIDE = 15 # Desplazamiento de la ventana (Recordar que se recomienda mínimo el 50% de overlap)
 
-#Clases definidas en dataset --> vídeos
+# CONFIGURACIÓN GENERAL
+VIDEO_ROOT = "dataset/videos"        # Carpeta con videos por clase
+OUT_DIR = "dataset/temporal"         # Carpeta de salida del dataset
+WINDOW = 30                          # Frames por ventana temporal
+STRIDE = 15                          # Desplazamiento entre ventanas (mínimo 50% de overlap)
+ 
+# Mapeo carpeta vídeos -> etiqueta numérica
 CLASSES = {
     "0_Cerrar": 0,
     "1_Parpadear": 1,
@@ -25,10 +24,11 @@ CLASSES = {
 
 os.makedirs(OUT_DIR, exist_ok=True)
 
+# CARGA DEL MODELO YOLO
 model = YOLO("models/yolo/eye_detector/weights/best.pt")
 
-# NORMALIZACIÓN
-# Conversión de coordenadas absolutas (pixeles) a coordenadas relativas al ojo
+
+# NORMALIZACIÓN DEL IRIS RESPECTO AL OJO
 def normalize(cx_iris, cy_iris, eye_box):
     x1, y1, x2, y2 = eye_box
     cx_eye = (x1 + x2) / 2
@@ -39,14 +39,15 @@ def normalize(cx_iris, cy_iris, eye_box):
     if w_eye == 0 or h_eye == 0:
         return None
 
-    cx_n = (cx_iris - cx_eye) / w_eye
-    cy_n = (cy_iris - cy_eye) / h_eye
-    return [cx_n, cy_n]
+    return [
+        (cx_iris - cx_eye) / w_eye,
+        (cy_iris - cy_eye) / h_eye
+    ]
 
-# CREACIÓN DATASET
+# CREACIÓN DEL DATASET
 X, y = [], []
 
-for folder, label in CLASSES.items():               # Itera por cada clase
+for folder, label in CLASSES.items():
     folder_path = os.path.join(VIDEO_ROOT, folder)
 
     for video in os.listdir(folder_path):
@@ -58,39 +59,70 @@ for folder, label in CLASSES.items():               # Itera por cada clase
             if not ret:
                 break
 
-            # YOLO detecta bounding box del ojo y bounding box del iris
-            r = model(frame)[0]
-            eye_box = iris = None
+            results = model(frame, verbose=False)[0]
 
-            for b in r.boxes:
-                cls = int(b.cls[0].cpu().numpy())
+            eyes = []
+            irises = []
+
+            # RECOLECTAR DETECCIONES CON CONFIANZA
+            for b in results.boxes:
+                cls_id = int(b.cls[0])
+                cls_name = model.names[cls_id].lower()
+                conf = float(b.conf[0])
                 x1, y1, x2, y2 = b.xyxy[0].cpu().numpy()
 
-                # Selección de detecciones entre ojo e iris
-                if cls == 0:      # ojo
-                    eye_box = (x1, y1, x2, y2)
-                elif cls == 1:    # iris
-                    iris = ((x1 + x2) / 2, (y1 + y2) / 2)
+                if cls_name == "ojos":
+                    eyes.append((conf, (x1, y1, x2, y2)))
 
-            # Extracción de coordenadas
-            if eye_box and iris:
-                coord = normalize(iris[0], iris[1], eye_box)
-                if coord:
-                    coords.append(coord)
+                elif cls_name == "iris":
+                    irises.append((conf, ((x1 + x2) / 2, (y1 + y2) / 2)))
+
+            # QUEDARSE CON LOS 2 MÁS CONFIABLES
+            eyes = sorted(eyes, key=lambda x: x[0], reverse=True)[:2]
+            irises = sorted(irises, key=lambda x: x[0], reverse=True)[:2]
+
+            if len(eyes) < 2 or len(irises) < 2:
+                continue
+
+            eyes = [e[1] for e in eyes]
+            irises = [i[1] for i in irises]
+
+
+            # ORDENAR OJOS IZQUIERDO Y DERECHO
+            eyes = sorted(eyes, key=lambda b: (b[0] + b[2]) / 2)
+            left_eye, right_eye = eyes
+
+            # ASIGNAR IRIS AL OJO MÁS CERCANO
+            def closest_iris(eye, irises):
+                ex = (eye[0] + eye[2]) / 2
+                ey = (eye[1] + eye[3]) / 2
+                return min(irises, key=lambda i: (i[0] - ex)**2 + (i[1] - ey)**2)
+
+            left_iris = closest_iris(left_eye, irises)
+            right_iris = closest_iris(right_eye, irises)
+
+            coord_L = normalize(left_iris[0], left_iris[1], left_eye)
+            coord_R = normalize(right_iris[0], right_iris[1], right_eye)
+
+            if coord_L and coord_R:
+                # [xL, yL, xR, yR]
+                coords.append(coord_L + coord_R)
 
         cap.release()
 
-        # Ventanas temporales
+        # VENTANAS TEMPORALES
         for i in range(0, len(coords) - WINDOW, STRIDE):
             X.append(coords[i:i + WINDOW])
             y.append(label)
 
+
+# GUARDADO FINAL
 X = np.array(X)
 y = np.array(y)
 
 np.save(f"{OUT_DIR}/X.npy", X)
 np.save(f"{OUT_DIR}/y.npy", y)
 
-print("✔ Dataset temporal creado")
+print("✔ Dataset temporal creado correctamente")
 print("X:", X.shape)
 print("y:", y.shape)
