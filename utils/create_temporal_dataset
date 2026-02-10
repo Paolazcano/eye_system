@@ -3,13 +3,12 @@ import os
 import numpy as np
 from ultralytics import YOLO
 
-
 # CONFIGURACIÓN GENERAL
 VIDEO_ROOT = "dataset/videos"        # Carpeta con videos por clase
 OUT_DIR = "dataset/temporal"         # Carpeta de salida del dataset
 WINDOW = 30                          # Frames por ventana temporal
 STRIDE = 15                          # Desplazamiento entre ventanas (mínimo 50% de overlap)
- 
+
 # Mapeo carpeta vídeos -> etiqueta numérica
 CLASSES = {
     "0_Cerrar": 0,
@@ -26,7 +25,6 @@ os.makedirs(OUT_DIR, exist_ok=True)
 
 # CARGA DEL MODELO YOLO
 model = YOLO("models/yolo/eye_detector/weights/best.pt")
-
 
 # NORMALIZACIÓN DEL IRIS RESPECTO AL OJO
 def normalize(cx_iris, cy_iris, eye_box):
@@ -61,13 +59,12 @@ for folder, label in CLASSES.items():
 
             results = model(frame, verbose=False)[0]
 
-            eyes = []
-            irises = []
+            eyes = []    # (conf, box)
+            irises = []  # (conf, center)
 
-            # RECOLECTAR DETECCIONES CON CONFIANZA
+            # RECOLECTAR DETECCIONES DE CONFIANZA
             for b in results.boxes:
-                cls_id = int(b.cls[0])
-                cls_name = model.names[cls_id].lower()
+                cls_name = model.names[int(b.cls[0])].lower()
                 conf = float(b.conf[0])
                 x1, y1, x2, y2 = b.xyxy[0].cpu().numpy()
 
@@ -75,38 +72,47 @@ for folder, label in CLASSES.items():
                     eyes.append((conf, (x1, y1, x2, y2)))
 
                 elif cls_name == "iris":
-                    irises.append((conf, ((x1 + x2) / 2, (y1 + y2) / 2)))
+                    cx = (x1 + x2) / 2
+                    cy = (y1 + y2) / 2
+                    irises.append((conf, (cx, cy)))
 
-            # QUEDARSE CON LOS 2 MÁS CONFIABLES
+            # QUEDARSE CON LOS MÁS CONFIABLES
+            # OJOS: máximo 2, mínimo 2
             eyes = sorted(eyes, key=lambda x: x[0], reverse=True)[:2]
-            irises = sorted(irises, key=lambda x: x[0], reverse=True)[:2]
-
-            if len(eyes) < 2 or len(irises) < 2:
+            if len(eyes) < 2:
                 continue
 
             eyes = [e[1] for e in eyes]
-            irises = [i[1] for i in irises]
-
-
-            # ORDENAR OJOS IZQUIERDO Y DERECHO
             eyes = sorted(eyes, key=lambda b: (b[0] + b[2]) / 2)
             left_eye, right_eye = eyes
 
-            # ASIGNAR IRIS AL OJO MÁS CERCANO
+            # IRIS: máximo 2, sin mínimo
+            irises = sorted(irises, key=lambda x: x[0], reverse=True)[:2]
+            irises = [i[1] for i in irises]
+
+            # ASIGNACIÓN DE IRIS AL OJO MÁS CERCANO (SI EXISTE)
             def closest_iris(eye, irises):
                 ex = (eye[0] + eye[2]) / 2
                 ey = (eye[1] + eye[3]) / 2
                 return min(irises, key=lambda i: (i[0] - ex)**2 + (i[1] - ey)**2)
 
-            left_iris = closest_iris(left_eye, irises)
-            right_iris = closest_iris(right_eye, irises)
+            coords_frame = []
 
-            coord_L = normalize(left_iris[0], left_iris[1], left_eye)
-            coord_R = normalize(right_iris[0], right_iris[1], right_eye)
+            if len(irises) >= 1:
+                iris_L = closest_iris(left_eye, irises)
+                coord_L = normalize(iris_L[0], iris_L[1], left_eye)
+                coords_frame += coord_L if coord_L else [0, 0]
+            else:
+                coords_frame += [0, 0]
 
-            if coord_L and coord_R:
-                # [xL, yL, xR, yR]
-                coords.append(coord_L + coord_R)
+            if len(irises) == 2:
+                iris_R = closest_iris(right_eye, irises)
+                coord_R = normalize(iris_R[0], iris_R[1], right_eye)
+                coords_frame += coord_R if coord_R else [0, 0]
+            else:
+                coords_frame += [0, 0]
+
+            coords.append(coords_frame)
 
         cap.release()
 
@@ -115,14 +121,15 @@ for folder, label in CLASSES.items():
             X.append(coords[i:i + WINDOW])
             y.append(label)
 
-
-# GUARDADO FINAL
+# GUARDADO
 X = np.array(X)
 y = np.array(y)
 
 np.save(f"{OUT_DIR}/X.npy", X)
 np.save(f"{OUT_DIR}/y.npy", y)
 
-print("✔ Dataset temporal creado correctamente")
+print("✔ Dataset temporal creado")
 print("X:", X.shape)
 print("y:", y.shape)
+
+
