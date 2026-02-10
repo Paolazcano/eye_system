@@ -1,27 +1,32 @@
-# CÓDIGO DE PRUEBA PARA VISUALIZAR EN TIEMPO REAL LAS COORDENADAS NORMALIZADAS
+# CÓDIGO DE PRUEBA
+# VISUALIZACIÓN EN TIEMPO REAL DE COORDENADAS NORMALIZADAS
 
-#INTERPRETACIÓN DEL PLANO:
-# Ojo a la derecha → punto se mueve a la derecha
-# Ojo arriba → punto sube
-# Ojo quieto → punto cerca del centro
-# Trayectorias suaves
+# INTERPRETACIÓN DEL PLANO:
+# Ojo a la derecha  - punto se mueve a la derecha
+# Ojo arriba        - punto sube
+# Ojo centrado      - punto cerca del origen
+# Movimiento suave  - trayectorias continuas
 
 import cv2
 import numpy as np
 from ultralytics import YOLO
 
-# Cargar modelo YOLO
+# CARGA DEL MODELO 
 model = YOLO("models/yolo/eye_detector/weights/best.pt")
 
-# Abrir cámara
+
+# CÁMARA ACTIVADA
 cap = cv2.VideoCapture(0)
 
-# Imagen del plano XY
+
+# PLANO XY
 plane_size = 400
 plane = np.ones((plane_size, plane_size, 3), dtype=np.uint8) * 255
 center = plane_size // 2
-scale = 150  # amplificación visual
+scale = 150
 
+# NORMALIZACIÓN
+# Coordenadas del iris relativas al centro del ojo
 def normalize(cx_iris, cy_iris, eye_box):
     x1, y1, x2, y2 = eye_box
     cx_eye = (x1 + x2) / 2
@@ -32,78 +37,94 @@ def normalize(cx_iris, cy_iris, eye_box):
     if w_eye == 0 or h_eye == 0:
         return None
 
-    cx_n = (cx_iris - cx_eye) / w_eye
-    cy_n = (cy_iris - cy_eye) / h_eye
-    return cx_n, cy_n
+    return (
+        (cx_iris - cx_eye) / w_eye,
+        (cy_iris - cy_eye) / h_eye
+    )
 
+# LOOP PRINCIPAL
 while True:
     ret, frame = cap.read()
     if not ret:
         break
 
-    results = model(frame)[0]
+    results = model(frame, verbose=False)[0]
 
-    eye_box = None
-    iris_center = None
+    eyes = []
+    irises = []
 
-    for box in results.boxes:
-        cls_id = int(box.cls[0])
-        cls_name = results.names[cls_id]
+    # RECOLECTAR DETECCIONES USANDO NOMBRES DE CLASE
+    for b in results.boxes:
+        cls_name = model.names[int(b.cls[0])].lower()
+        conf = float(b.conf[0])
+        x1, y1, x2, y2 = b.xyxy[0].cpu().numpy()
 
-        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-
-        if cls_name == "eye":
-            eye_box = (x1, y1, x2, y2)
-            cv2.rectangle(
-                frame,
-                (int(x1), int(y1)),
-                (int(x2), int(y2)),
-                (0, 255, 0),
-                2
-            )
+        if cls_name == "ojos":
+            eyes.append((conf, (x1, y1, x2, y2)))
+            cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0,255,0), 2)
 
         elif cls_name == "iris":
-            cx = (x1 + x2) / 2
-            cy = (y1 + y2) / 2
-            iris_center = (cx, cy)
-            cv2.circle(
-                frame,
-                (int(cx), int(cy)),
-                4,
-                (255, 0, 0),
-                -1
-            )
+            cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+            irises.append((conf, (cx, cy)))
+            cv2.circle(frame, (int(cx), int(cy)), 4, (255,0,0), -1)
 
-    # Limpiar plano
+    # OJOS: máximo 2, mínimo 2
+    eyes = sorted(eyes, key=lambda x: x[0], reverse=True)[:2]
+    if len(eyes) < 2:
+        cv2.imshow("YOLO Detection", frame)
+        cv2.imshow("Normalized Iris Coordinates", plane)
+        if cv2.waitKey(1) & 0xFF == 27:
+            break
+        continue
+
+    eyes = [e[1] for e in eyes]
+    eyes = sorted(eyes, key=lambda b: (b[0] + b[2]) / 2)
+    left_eye, right_eye = eyes
+
+    # IRIS: máximo 2, sin mínimo
+    irises = sorted(irises, key=lambda x: x[0], reverse=True)[:2]
+    irises = [i[1] for i in irises]
+
+    # PLANO XY
     plane[:] = 255
-    cv2.line(plane, (center, 0), (center, plane_size), (0, 0, 0), 1)
-    cv2.line(plane, (0, center), (plane_size, center), (0, 0, 0), 1)
+    cv2.line(plane, (center, 0), (center, plane_size), (0,0,0), 1)
+    cv2.line(plane, (0, center), (plane_size, center), (0,0,0), 1)
 
-    if eye_box is not None and iris_center is not None:
-        norm = normalize(iris_center[0], iris_center[1], eye_box)
-        if norm:
-            cx_n, cy_n = norm
+    if len(irises) >= 1:
+        def closest_iris(eye, irises):
+            ex = (eye[0] + eye[2]) / 2
+            ey = (eye[1] + eye[3]) / 2
+            return min(irises, key=lambda i: (i[0] - ex)**2 + (i[1] - ey)**2)
 
-            px = int(center + cx_n * scale)
-            py = int(center + cy_n * scale)
+        coords = []
 
-            cv2.circle(plane, (px, py), 6, (0, 0, 255), -1)
+        iris_L = closest_iris(left_eye, irises)
+        coord_L = normalize(iris_L[0], iris_L[1], left_eye)
+        coords.append(coord_L if coord_L else (0,0))
 
-            cv2.putText(
-                plane,
-                f"x={cx_n:.3f}, y={cy_n:.3f}",
-                (10, 20),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (0, 0, 0),
-                1
-            )
+        if len(irises) == 2:
+            iris_R = closest_iris(right_eye, irises)
+            coord_R = normalize(iris_R[0], iris_R[1], right_eye)
+            coords.append(coord_R if coord_R else (0,0))
+        else:
+            coords.append((0,0))
 
+        cx_n = (coords[0][0] + coords[1][0]) / 2
+        cy_n = (coords[0][1] + coords[1][1]) / 2
+
+        px = int(center + cx_n * scale)
+        py = int(center + cy_n * scale)
+
+        cv2.circle(plane, (px, py), 6, (0,0,255), -1)
+
+    # MOSTRAR VENTANAS
     cv2.imshow("YOLO Detection", frame)
     cv2.imshow("Normalized Iris Coordinates", plane)
 
+    # ESC para salir
     if cv2.waitKey(1) & 0xFF == 27:
         break
 
+# LIBERACIÓN DE RECURSOS
 cap.release()
 cv2.destroyAllWindows()
