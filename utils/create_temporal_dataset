@@ -6,9 +6,10 @@ from ultralytics import YOLO
 # CONFIGURACIÓN
 VIDEO_ROOT = "dataset/videos"
 OUT_DIR = "dataset/temporal"
-WINDOW = 30
-STRIDE = 15
+WINDOW = 30 # Valor de la ventan = 30 fps
+STRIDE = 15 # Desplazamiento de la ventana (Recordar que se recomienda mínimo el 50% de overlap)
 
+#Clases definidas en dataset --> vídeos
 CLASSES = {
     "0_Cerrar": 0,
     "1_Parpadear": 1,
@@ -25,6 +26,8 @@ os.makedirs(OUT_DIR, exist_ok=True)
 model = YOLO("models/yolo/eye_detector/weights/best.pt")
 
 # NORMALIZACIÓN
+# Conversión de coordenadas absolutas (pixeles) a coordenadas relativas al ojo
+
 def normalize(cx_iris, cy_iris, eye_box):
     x1, y1, x2, y2 = eye_box
     cx_eye = (x1 + x2) / 2
@@ -42,7 +45,7 @@ def normalize(cx_iris, cy_iris, eye_box):
 # CREACIÓN DATASET
 X, y = [], []
 
-for folder, label in CLASSES.items():
+for folder, label in CLASSES.items():               # Itera por cada clase
     folder_path = os.path.join(VIDEO_ROOT, folder)
 
     for video in os.listdir(folder_path):
@@ -54,6 +57,7 @@ for folder, label in CLASSES.items():
             if not ret:
                 break
 
+            # YOLO detecta bounding box del ojo y bounding box del iris
             r = model(frame)[0]
             eye_box = iris = None
 
@@ -61,12 +65,13 @@ for folder, label in CLASSES.items():
                 cls = int(b.cls[0].cpu().numpy())
                 x1, y1, x2, y2 = b.xyxy[0].cpu().numpy()
 
+                # Selección de detecciones entre ojo e iris
                 if cls == 0:      # ojo
                     eye_box = (x1, y1, x2, y2)
                 elif cls == 1:    # iris
                     iris = ((x1 + x2) / 2, (y1 + y2) / 2)
 
-
+            # Extracción de coordenadas
             if eye_box and iris:
                 coord = normalize(iris[0], iris[1], eye_box)
                 if coord:
