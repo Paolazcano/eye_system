@@ -80,7 +80,7 @@ for folder, label in CLASSES.items():               # Itera por cada clase
 
         cap.release()
 
-        # ventanas temporales
+        # Ventanas temporales
         for i in range(0, len(coords) - WINDOW, STRIDE):
             X.append(coords[i:i + WINDOW])
             y.append(label)
