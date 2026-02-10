@@ -1,3 +1,5 @@
+# CÓDIGO PARA NORMALIZACIÓN DE COORDENADAS DEL IRIS Y EL OJO, PREPROCESAMIENTO DE LSTM
+
 import cv2
 import os
 import numpy as np
@@ -27,7 +29,6 @@ model = YOLO("models/yolo/eye_detector/weights/best.pt")
 
 # NORMALIZACIÓN
 # Conversión de coordenadas absolutas (pixeles) a coordenadas relativas al ojo
-
 def normalize(cx_iris, cy_iris, eye_box):
     x1, y1, x2, y2 = eye_box
     cx_eye = (x1 + x2) / 2
