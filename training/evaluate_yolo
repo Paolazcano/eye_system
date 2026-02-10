@@ -1,4 +1,8 @@
 # CÓDIGO PARA EVALUAR LAS MÉTRICAS SURGIDAS DEL MODELO DE YOLO
+# Precisión: De todo lo que el modelo detectó, que porcentaje era correcto
+# Recall: De todos los objetos reales, cuantos logró detectar
+# mAP@50: Evalua que el modelo detecte bien la presencia del ojo
+# mAP@50–95: Evalúa qué tan bien ajustada está la caja
 
 from ultralytics import YOLO
 
