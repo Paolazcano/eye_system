@@ -1,0 +1,190 @@
+# Este código genera los planos espaciales de cada ojo, asi como 
+# su respectivo tensor (256*256*30 )a partir de las coordenadas y 
+# el tiempo (1s =30fps)
+import cv2
+import numpy as np
+import math
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+from ultralytics import YOLO
+
+# CONFIGURACIÓN GENERAL
+FPS = 30                      # 1 segundo = 30 frames
+VOLUME_X = 256                # Dimensión X del volumen
+VOLUME_Y = 256                # Dimensión Y del volumen
+VOLUME_Z = 30                 # Dimensión Z = tiempo (1 segundo)
+
+# Cargar modelo YOLO entrenado
+model = YOLO("models/yolo/eye_detector/weights/best.pt")
+
+# Captura de cámara
+cap = cv2.VideoCapture(0)
+
+# PLANOS ESPACIALES INDEPENDIENTES
+# Cada plano representa el movimiento XY del iris
+plane_size = 400
+center = plane_size // 2
+
+plane_L = np.ones((plane_size, plane_size, 3), dtype=np.uint8) * 255
+plane_R = np.ones((plane_size, plane_size, 3), dtype=np.uint8) * 255
+
+trajectory_L = []
+trajectory_R = []
+
+
+# VOLUMEN 3D (X,Y,Z)
+# X → desplazamiento horizontal
+# Y → desplazamiento vertical
+# Z → tiempo (30 capas = 1 segundo)
+# Escala de grises (0–255)
+volume_L = np.zeros((VOLUME_X, VOLUME_Y, VOLUME_Z), dtype=np.uint8)
+volume_R = np.zeros((VOLUME_X, VOLUME_Y, VOLUME_Z), dtype=np.uint8)
+
+frame_index = 0  # contador global de frames
+
+
+# FUNCIÓN: ENCONTRAR IRIS MÁS CERCANO A UN OJO
+def closest_iris(eye, irises):
+    ex = (eye[0] + eye[2]) / 2
+    ey = (eye[1] + eye[3]) / 2
+    return min(irises, key=lambda i: (i[0] - ex)**2 + (i[1] - ey)**2)
+
+# FUNCIÓN: DETERMINAR DIRECCIÓN DOMINANTE
+def direction_text(dx, dy):
+    if abs(dx) > abs(dy):
+        return "DERECHA" if dx > 0 else "IZQUIERDA"
+    else:
+        return "ARRIBA" if dy > 0 else "ABAJO"
+
+
+# FUNCIÓN: VISUALIZACIÓN 3D REAL DEL VOLUMEN
+# Muestra los puntos activos (valor 255)
+def show_3d(volume, title):
+
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+
+    # Obtener coordenadas donde hay movimiento
+    x, y, z = np.where(volume == 255)
+
+    ax.scatter(x, y, z, s=2)
+
+    ax.set_xlabel("Desplazamiento X")
+    ax.set_ylabel("Desplazamiento Y")
+    ax.set_zlabel("Tiempo (frames)")
+    ax.set_title(title)
+
+    plt.show()
+
+print("ESC para salir")
+print("Presiona 'v' para visualizar volumen 3D del último segundo")
+
+
+# LOOP PRINCIPAL
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    results = model(frame, verbose=False)[0]
+
+    eyes = []
+    irises = []
+
+    # DETECCIÓN DE OJOS E IRIS CON YOLO
+    for b in results.boxes:
+        cls_name = model.names[int(b.cls[0])].lower()
+        x1, y1, x2, y2 = b.xyxy[0].cpu().numpy()
+
+        if cls_name == "ojos":
+            eyes.append((x1, y1, x2, y2))
+            cv2.rectangle(frame, (int(x1), int(y1)),
+                          (int(x2), int(y2)), (0,255,0), 2)
+
+        elif cls_name == "iris":
+            cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+            irises.append((cx, cy))
+            cv2.circle(frame, (int(cx), int(cy)), 4, (255,0,0), -1)
+
+    if len(eyes) < 2 or len(irises) < 1:
+        cv2.imshow("Frame", frame)
+        if cv2.waitKey(1) & 0xFF == 27:
+            break
+        continue
+
+    # Ordenar ojos de izquierda a derecha
+    eyes = sorted(eyes, key=lambda b: (b[0] + b[2]) / 2)
+    left_eye, right_eye = eyes[:2]
+
+    # FUNCIÓN PRINCIPAL DE PROCESAMIENTO POR OJO
+    def process_eye(eye, plane, trajectory, volume, color, label):
+
+        # 1.REFERENCIA DINÁMICA
+        x1, y1, x2, y2 = eye
+        eye_cx = int((x1 + x2) / 2)
+        eye_cy = int((y1 + y2) / 2)
+
+        # Iris más cercano
+        iris = closest_iris(eye, irises)
+        px, py = int(iris[0]), int(iris[1])
+
+        # 2.DESPLAZAMIENTO RELATIVO
+        dx = px - eye_cx
+        dy = eye_cy - py
+
+        r = math.sqrt(dx**2 + dy**2)
+        theta = math.degrees(math.atan2(dy, dx))
+        direction = direction_text(dx, dy)
+
+        # 3.PLANO ESPACIAL XY
+        plane[:] = 255
+        cv2.line(plane, (center, 0), (center, plane_size), (0,0,0), 1)
+        cv2.line(plane, (0, center), (plane_size, center), (0,0,0), 1)
+
+        plot_x = center + dx
+        plot_y = center - dy
+
+        trajectory.append((plot_x, plot_y))
+
+        for i in range(1, len(trajectory)):
+            cv2.line(plane, trajectory[i-1], trajectory[i], color, 1)
+
+        cv2.circle(plane, (plot_x, plot_y), 5, color, -1)
+
+        info = f"{label}: dx={dx} dy={dy} | r={r:.1f} | ang={theta:.1f} | {direction}"
+        cv2.putText(plane, info, (10,20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
+        # 4. ACTUALIZACIÓN DEL VOLUMEN 3D
+        global frame_index
+        z = frame_index % VOLUME_Z
+
+        vol_x = np.clip(dx + 128, 0, 255)
+        vol_y = np.clip(dy + 128, 0, 255)
+
+        volume[int(vol_x), int(vol_y), z] = 255
+
+    # Procesar ambos ojos
+    process_eye(left_eye, plane_L, trajectory_L, volume_L, (255,0,0), "L")
+    process_eye(right_eye, plane_R, trajectory_R, volume_R, (0,0,255), "R")
+
+    frame_index += 1
+
+    # VISUALIZACIÓN 2D
+    cv2.imshow("Frame", frame)
+    cv2.imshow("Trayectoria Ojo Izquierdo", plane_L)
+    cv2.imshow("Trayectoria Ojo Derecho", plane_R)
+
+    key = cv2.waitKey(1) & 0xFF
+
+    # ESC para salir
+    if key == 27:
+        break
+
+    # 'v' para visualizar volumen 3D del último segundo
+    if key == ord('v'):
+        show_3d(volume_L, "Volumen 3D - Ojo Izquierdo")
+        show_3d(volume_R, "Volumen 3D - Ojo Derecho")
+
+cap.release()
+cv2.destroyAllWindows()
