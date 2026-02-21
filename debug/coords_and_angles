@@ -1,0 +1,151 @@
+# ESTE CÓDIGO QUEDA DESCARTADO 
+""" Básicamente, calibra el primer iris como punto fijo"""
+#-----------------------------------------------------------------
+import cv2
+import numpy as np
+import math
+from ultralytics import YOLO
+
+# CARGA DEL MODELO
+model = YOLO("models/yolo/eye_detector/weights/best.pt")
+
+cap = cv2.VideoCapture(0)
+
+# Plano para graficar trayectoria
+plane_size = 400
+plane = np.ones((plane_size, plane_size, 3), dtype=np.uint8) * 255
+center = plane_size // 2
+scale = 1.0  # se usan píxeles reales
+
+# Trayectorias
+trajectory_left = []
+trajectory_right = []
+
+# Referencias fijas
+ref_left = None
+ref_right = None
+
+def closest_iris(eye, irises):
+    ex = (eye[0] + eye[2]) / 2
+    ey = (eye[1] + eye[3]) / 2
+    return min(irises, key=lambda i: (i[0] - ex)**2 + (i[1] - ey)**2)
+
+print("Presiona 'C' para calibrar punto fijo")
+print("ESC para salir")
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    results = model(frame, verbose=False)[0]
+
+    eyes = []
+    irises = []
+
+    for b in results.boxes:
+        cls_name = model.names[int(b.cls[0])].lower()
+        conf = float(b.conf[0])
+        x1, y1, x2, y2 = b.xyxy[0].cpu().numpy()
+
+        if cls_name == "ojos":
+            eyes.append((conf, (x1, y1, x2, y2)))
+            cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0,255,0), 2)
+
+        elif cls_name == "iris":
+            cx, cy = (x1 + x2) / 2, (y1 + y2) / 2 #centro del iris en coordenadas de imagen (píxeles)
+            irises.append((conf, (cx, cy)))
+            cv2.circle(frame, (int(cx), int(cy)), 4, (255,0,0), -1)
+
+    eyes = sorted(eyes, key=lambda x: x[0], reverse=True)[:2]
+    irises = sorted(irises, key=lambda x: x[0], reverse=True)[:2]
+
+    if len(eyes) < 2 or len(irises) < 1:
+        cv2.imshow("Frame", frame)
+        cv2.imshow("Trajectory", plane)
+        if cv2.waitKey(1) & 0xFF == 27:
+            break
+        continue
+
+    eyes = [e[1] for e in eyes]
+    eyes = sorted(eyes, key=lambda b: (b[0] + b[2]) / 2)
+    left_eye, right_eye = eyes
+
+    irises = [i for _, i in irises]
+
+    # Reiniciar plano
+    plane[:] = 255
+    cv2.line(plane, (center, 0), (center, plane_size), (0,0,0), 1)
+    cv2.line(plane, (0, center), (plane_size, center), (0,0,0), 1)
+
+    # CALIBRACIÓN
+    # La posición actual del iris se convierte en mi origen (0,0)
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord('c'):
+        print("Calibración guardada")
+        iris_L = closest_iris(left_eye, irises)
+        ref_left = iris_L
+
+        if len(irises) == 2:
+            iris_R = closest_iris(right_eye, irises)
+            ref_right = iris_R
+
+        trajectory_left.clear()
+        trajectory_right.clear()
+
+    # OJO IZQUIERDO
+    iris_L = closest_iris(left_eye, irises)
+    px_L, py_L = int(iris_L[0]), int(iris_L[1])
+
+    if ref_left is not None:
+        dx = px_L - ref_left[0]
+        dy = ref_left[1] - py_L
+
+        r = math.sqrt(dx**2 + dy**2)
+        theta = math.degrees(math.atan2(dy, dx))
+
+        plot_x = int(center + dx * scale)
+        plot_y = int(center - dy * scale)
+
+        trajectory_left.append((plot_x, plot_y))
+
+        for i in range(1, len(trajectory_left)):
+            cv2.line(plane, trajectory_left[i-1],
+                     trajectory_left[i], (255,0,0), 1)
+
+        cv2.circle(plane, (plot_x, plot_y), 5, (255,0,0), -1)
+        cv2.putText(plane, f"L theta={theta:.1f}",
+                    (10,20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,0,0), 1)
+
+    # OJO DERECHO
+    if len(irises) == 2 and ref_right is not None:
+        iris_R = closest_iris(right_eye, irises)
+        px_R, py_R = int(iris_R[0]), int(iris_R[1])
+
+        dx = px_R - ref_right[0]
+        dy = ref_right[1] - py_R
+
+        r = math.sqrt(dx**2 + dy**2)
+        theta = math.degrees(math.atan2(dy, dx))
+
+        plot_x = int(center + dx * scale)
+        plot_y = int(center - dy * scale)
+
+        trajectory_right.append((plot_x, plot_y))
+
+        for i in range(1, len(trajectory_right)):
+            cv2.line(plane, trajectory_right[i-1],
+                     trajectory_right[i], (0,0,255), 1)
+
+        cv2.circle(plane, (plot_x, plot_y), 5, (0,0,255), -1)
+        cv2.putText(plane, f"R theta={theta:.1f}",
+                    (10,40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 1)
+
+    cv2.imshow("Frame", frame)
+    cv2.imshow("Trajectory", plane)
+
+    if key == 27:
+        break
+
+cap.release()
+cv2.destroyAllWindows()
