@@ -1,0 +1,405 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+from ultralytics import YOLO
+import math
+from collections import deque  # Para el suavizado eficiente
+
+
+# CONFIGURACIÓN GENERAL
+FPS = 30
+VOLUME_X = 256
+VOLUME_Y = 256
+VOLUME_Z = 30   # 1 segundo exacto 
+
+"""
+z = 0 → tiempo 0 s
+z = 15 → 0.5 s
+z = 29 → 0.96 s aprox
+"""
+ALPHA = 0.93    # Decaimiento ajustado a memoria ~1s
+
+plane_size = 400
+center = plane_size // 2
+
+# PARÁMETROS DE LIMPIEZA 
+UMBRAL_RUIDO = 65    # Máximo desplazamiento (píxeles) permitido desde el centro
+MAX_SUAVIZADO = 5    # Frames para promediar (elimina vibración)
+
+# Buffers para suavizado
+buffer_L = deque(maxlen=MAX_SUAVIZADO)
+buffer_R = deque(maxlen=MAX_SUAVIZADO)
+
+# CONFIGURACIÓN DE ESCALA
+GANANCIA_BASE = 2.2          # Ganancia principal más estable
+OJO_REFERENCIA_PX = 60.0     # Tamaño esperado del ojo
+
+ESCALA_MIN = 0.7             # Evita que se comprima demasiado
+ESCALA_MAX = 2.0             # Evita explosión cuando te alejas
+
+LIMITE_DESPLAZAMIENTO = 120  # Seguridad para el volumen 256x256
+
+
+# CARGA MODELO YOLO Y ACTIVAR CÁMARA
+model = YOLO("models/yolo/eye_detector/weights/best.pt")
+cap = cv2.VideoCapture(0)
+
+
+# PLANOS VISUALES XY
+plane_L = np.ones((plane_size, plane_size, 3), dtype=np.uint8) * 255
+plane_R = np.ones((plane_size, plane_size, 3), dtype=np.uint8) * 255
+
+trajectory_L = []
+trajectory_R = []
+
+
+# VOLUMENES 3D (256x256x30)
+"""
+Se establecen las dimensiones de un "cubo" virtual de datos
+de 256x256 (espacio XY) por 30 (tiempo = 1 segundo a 30 FPS).
+"""
+
+# 1. Decaimiento
+volume_decay_L = np.zeros((VOLUME_X, VOLUME_Y, VOLUME_Z), dtype=np.float32)
+volume_decay_R = np.zeros((VOLUME_X, VOLUME_Y, VOLUME_Z), dtype=np.float32)
+
+# 2. Progresivo
+volume_prog_L = np.zeros((VOLUME_X, VOLUME_Y, VOLUME_Z), dtype=np.float32)
+volume_prog_R = np.zeros((VOLUME_X, VOLUME_Y, VOLUME_Z), dtype=np.float32)
+
+# 3. Binarizado
+volume_bin_L = np.zeros((VOLUME_X, VOLUME_Y, VOLUME_Z), dtype=np.uint8)
+volume_bin_R = np.zeros((VOLUME_X, VOLUME_Y, VOLUME_Z), dtype=np.uint8)
+
+frame_index = 0
+
+
+# FUNCIONES AUXILIARES
+
+def closest_iris(eye, irises):
+    """ 
+    Asegura que cada iris detectado se asigne correctamente al ojo corres-
+    pondiente (izquierdo o derecho) basándose en la distancia mínima.
+    """
+    ex = (eye[0] + eye[2]) / 2
+    ey = (eye[1] + eye[3]) / 2
+    return min(irises, key=lambda i: (i[0]-ex)**2 + (i[1]-ey)**2)
+
+
+def compute_direction(dx, dy):
+    """
+    Calcula:
+    - Ángulo en grados
+    - Dirección cardinal
+    - Cuadrante
+    """
+    angle = math.degrees(math.atan2(dy, dx))
+    if angle < 0:
+        angle += 360
+
+    dirs = ["E","NE","N","NW","W","SW","S","SE"]
+    idx = int((angle + 22.5)//45)%8
+    direction = dirs[idx]
+
+    if dx>=0 and dy>=0: quad="I"
+    elif dx<0 and dy>=0: quad="II"
+    elif dx<0 and dy<0: quad="III"
+    else: quad="IV"
+
+    return angle,direction,quad
+
+
+# VISUALIZACIÓN 3D CON ESCALA FIJA 256x256x30
+def show_3d(volume_L, volume_R, title):
+    """
+    Dibuja tensor 3D de ambos ojos.
+    Rojo = Izquierdo
+    Azul = Derecho
+
+    IMPORTANTE:
+    Se fuerzan los límites del cubo a:
+    X = 0 a 255
+    Y = 0 a 255
+    Z = 0 a 29
+
+    Aunque los datos no llenen el volumen completo,
+    el espacio visual siempre será 256x256x30.
+    """
+
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+
+    xL,yL,zL = np.where(volume_L>0)
+    xR,yR,zR = np.where(volume_R>0)
+
+    ax.scatter(xL,yL,zL,c='red',s=2)
+    ax.scatter(xR,yR,zR,c='blue',s=2)
+
+    # ESCALADO FORZADO 
+    ax.set_xlim(0,255)
+    ax.set_ylim(0,255)
+    ax.set_zlim(0,29)
+
+    ax.set_xlabel("X (256)")
+    ax.set_ylabel("Y (256)")
+    ax.set_zlabel("Tiempo / FPS (30)")
+    ax.set_title(title)
+
+    plt.show()
+
+
+# PROYECCIONES 2D CON EJES DEFINIDOS
+
+def build_decay_projection(vol_L, vol_R):
+    """
+    Calcula la densidad y la actividad sumando ambos volúmenes.
+    Genera una imagen con 3 canales:
+    - Densidad 
+    - Recencia
+    - Actividad
+    """
+    density = np.sum(vol_L+vol_R,axis=2)
+    recency = vol_L[:,:,-1]+vol_R[:,:,-1]
+    activity = np.sum(np.abs(np.diff(vol_L+vol_R,axis=2)),axis=2)
+
+    def norm(x):
+        return cv2.normalize(x,None,0,255,cv2.NORM_MINMAX).astype(np.uint8)
+
+    return np.stack([
+        norm(density),
+        norm(recency),
+        norm(activity)
+    ],axis=-1)
+
+
+def build_progressive_projection(vol_L, vol_R):
+    density = np.sum(vol_L+vol_R,axis=2)
+    return cv2.normalize(density,None,0,255,
+                         cv2.NORM_MINMAX).astype(np.uint8)
+
+
+def build_binary_projection(vol_L, vol_R):
+    density = np.sum(vol_L+vol_R,axis=2)
+    density[density>0]=255
+    return density.astype(np.uint8)
+
+
+# LOOP PRINCIPAL
+
+print("ESC → salir")
+print("S → Tensor 3D Decaimiento")
+
+while True:
+
+    ret,frame = cap.read()
+    if not ret: break
+
+    results = model(frame,verbose=False)[0]
+
+    eyes=[]
+    irises=[]
+
+    for b in results.boxes:
+        cls_name=model.names[int(b.cls[0])].lower()
+        x1,y1,x2,y2=b.xyxy[0].cpu().numpy()
+
+        if cls_name=="ojos":
+            eyes.append((x1,y1,x2,y2))
+            cv2.rectangle(frame,(int(x1),int(y1)),
+                          (int(x2),int(y2)),(0,255,0),2)
+
+        elif cls_name=="iris":
+            cx,cy=(x1+x2)/2,(y1+y2)/2
+            irises.append((cx,cy))
+            cv2.circle(frame,(int(cx),int(cy)),4,(255,0,0),-1)
+
+    if len(eyes)<2 or len(irises)<1:
+        cv2.imshow("Camera",frame)
+        if cv2.waitKey(1)&0xFF==27: break
+        continue
+
+    eyes=sorted(eyes,key=lambda b:(b[0]+b[2])/2)
+    left_eye,right_eye=eyes[:2]
+
+
+   # PROCESAMIENTO CON FILTRO
+    def process_eye(eye, plane, trajectory, vol_decay, vol_prog, vol_bin, color, buffer_filt):
+        global frame_index
+        
+        x1, y1, x2, y2 = eye
+        ancho_ojo = max(x2 - x1, 1)  # Protección contra división por 0
+        eye_cx, eye_cy = int((x1+x2)/2), int((y1+y2)/2)
+        
+        iris = closest_iris(eye, irises)
+        dx_raw = int(iris[0]) - eye_cx
+        dy_raw = eye_cy - int(iris[1])
+
+        # ESCALA DINÁMICA CONTROLADA
+        escala_distancia = OJO_REFERENCIA_PX / ancho_ojo
+        escala_distancia = np.clip(escala_distancia, ESCALA_MIN, ESCALA_MAX)
+
+        dx_amp = dx_raw * GANANCIA_BASE * escala_distancia
+        dy_amp = dy_raw * GANANCIA_BASE * escala_distancia
+
+        # LIMITADOR DE SEGURIDAD 
+        dx_amp = np.clip(dx_amp, -LIMITE_DESPLAZAMIENTO, LIMITE_DESPLAZAMIENTO)
+        dy_amp = np.clip(dy_amp, -LIMITE_DESPLAZAMIENTO, LIMITE_DESPLAZAMIENTO)
+
+        # FILTRO DE RUIDO AJUSTADO -
+        # El umbral ahora debe ser más flexible debido a la amplificación
+        if abs(dx_amp) > LIMITE_DESPLAZAMIENTO or abs(dy_amp) > LIMITE_DESPLAZAMIENTO:
+            return
+
+        # SUAVIZADO DE DATOS AMPLIFICADOS 
+        buffer_filt.append((dx_amp, dy_amp))
+        dx_f = int(np.mean([p[0] for p in buffer_filt]))
+        dy_f = int(np.mean([p[1] for p in buffer_filt]))
+        px, py = center + dx_f, center - dy_f
+
+        angle, direction, quad = compute_direction(dx_f, dy_f)
+
+        # PLANO XY 
+        plane[:]=255
+        cv2.line(plane,(center,0),(center,plane_size),(0,0,0),1)
+        cv2.line(plane,(0,center),(plane_size,center),(0,0,0),1)
+
+        plot_x = center + dx_f
+        plot_y = center - dy_f
+
+        trajectory.append((plot_x,plot_y))
+
+        for i in range(1,len(trajectory)):
+            cv2.line(plane,trajectory[i-1],trajectory[i],color,1)
+
+        cv2.circle(plane,(plot_x,plot_y),5,color,-1)
+
+        cv2.putText(plane,f"dx:{dx_f} dy:{dy_f}",
+                    (10,20),cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,color,1)
+
+        cv2.putText(plane,f"Ang:{round(angle,1)}",
+                    (10,40),cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,color,1)
+
+        cv2.putText(plane,f"Dir:{direction}",
+                    (10,60),cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,color,1)
+
+        cv2.putText(plane,f"Quad:{quad}",
+                    (10,80),cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,color,1)
+
+        # TENSOR 3D 
+        z=frame_index%VOLUME_Z
+        vol_x = np.clip(dx_f + 128, 0, 255)
+        vol_y = np.clip(dy_f + 128, 0, 255)
+
+        # 1. Decaimiento 
+        """ Es la imagen funcional para el entrenamiento """
+        if z>0:
+            vol_decay[:,:,z]=ALPHA*vol_decay[:,:,z-1]
+        else:
+            vol_decay[:,:,z]=ALPHA*vol_decay[:,:,-1]
+
+        vol_decay[int(vol_x),int(vol_y),z]+=1
+
+        # 2. Progresivo 
+        vol_prog[:,:,z]=0
+        vol_prog[int(vol_x),int(vol_y),z]=1
+
+        # 3. Binarizado 
+        vol_bin[:,:,z]=0
+        vol_bin[int(vol_x),int(vol_y),z]=1
+
+    # OJO IZQUIERDO ROJO
+    process_eye(left_eye,plane_L,trajectory_L,
+                volume_decay_L,volume_prog_L,
+                volume_bin_L,(0,0,255),
+                buffer_L)
+
+    # OJO DERECHO AZUL
+    process_eye(right_eye,plane_R,trajectory_R,
+                volume_decay_R,volume_prog_R,
+                volume_bin_R,(255,0,0),
+                buffer_R)
+
+    frame_index+=1
+
+    # VISUALIZACIÓN
+    cv2.imshow("Camera",frame)
+    cv2.imshow("Plano Izquierdo (Rojo)",plane_L)
+    cv2.imshow("Plano Derecho (Azul)",plane_R)
+
+    key=cv2.waitKey(1)&0xFF
+
+    if key==27: break
+
+    
+    # SNAPSHOT COMPLETO EN EL MISMO INSTANTE DE TIEMPO
+    """
+    Al presionar 's' se congelan los volúmenes actuales.
+    Se crean copias exactas del estado en ese frame.
+    Todas las representaciones usarán el mismo instante temporal.
+    """
+
+    if key==ord('s'):
+
+        # COPIA EXACTA DEL ESTADO ACTUAL 
+        snapshot_decay_L = volume_decay_L.copy()
+        snapshot_decay_R = volume_decay_R.copy()
+
+        snapshot_prog_L = volume_prog_L.copy()
+        snapshot_prog_R = volume_prog_R.copy()
+
+        snapshot_bin_L = volume_bin_L.copy()
+        snapshot_bin_R = volume_bin_R.copy()
+
+        tiempo_real = frame_index / FPS
+
+        print(f"\nSnapshot capturado en frame: {frame_index}")
+        print(f"Tiempo aproximado: {round(tiempo_real,3)} segundos\n")
+
+        # 1. TENSORES 3D
+        show_3d(snapshot_decay_L, snapshot_decay_R,
+                f"Tensor 3D Decaimiento | t={round(tiempo_real,3)}s")
+
+        show_3d(snapshot_prog_L, snapshot_prog_R,
+                f"Tensor 3D Progresivo | t={round(tiempo_real,3)}s")
+
+        show_3d(snapshot_bin_L, snapshot_bin_R,
+                f"Tensor 3D Binarizado | t={round(tiempo_real,3)}s")
+
+        # 2. PROYECCIONES 2D
+        img_decay = build_decay_projection(snapshot_decay_L,
+                                           snapshot_decay_R)
+
+        plt.figure()
+        plt.imshow(img_decay, extent=[0,255,0,255])
+        plt.xlabel("Eje X (0-255)")
+        plt.ylabel("Eje Y (0-255)")
+        plt.title(f"Proyección Decaimiento | t={round(tiempo_real,3)}s")
+        plt.grid(True)
+        plt.show()
+
+        img_prog = build_progressive_projection(snapshot_prog_L,
+                                                snapshot_prog_R)
+
+        plt.figure()
+        plt.imshow(img_prog, cmap='gray', extent=[0,255,0,255])
+        plt.xlabel("Eje X (0-255)")
+        plt.ylabel("Eje Y (0-255)")
+        plt.title(f"Proyección Progresiva | t={round(tiempo_real,3)}s")
+        plt.grid(True)
+        plt.show()
+
+        img_bin = build_binary_projection(snapshot_bin_L,
+                                          snapshot_bin_R)
+
+        plt.figure()
+        plt.imshow(img_bin, cmap='gray', extent=[0,255,0,255])
+        plt.xlabel("Eje X (0-255)")
+        plt.ylabel("Eje Y (0-255)")
+        plt.title(f"Proyección Binarizada | t={round(tiempo_real,3)}s")
+        plt.grid(True)
+        plt.show()
