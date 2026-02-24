@@ -1,4 +1,4 @@
-# ESTE CÓDIGO QUEDA DESCARTADO 
+# ESTE CÓDIGO QUEDA DESCARTADO (Es base para la lógica de m_&_a)
 """ Básicamente, calibra el primer iris como punto fijo"""
 #-----------------------------------------------------------------
 import cv2

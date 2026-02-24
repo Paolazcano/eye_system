@@ -1,3 +1,4 @@
+# ESTE CÓDIGO QUEDA DECARTADO (Es base para la lógica de v_p_a)
 # Este código genera los planos espaciales de cada ojo, asi como 
 # su respectivo tensor (256*256*30 )a partir de las coordenadas y 
 # el tiempo (1s = 30fps)
