@@ -23,7 +23,7 @@ ALPHA = 0.93    # Decaimiento ajustado a memoria ~1s
 plane_size = 400
 center = plane_size // 2
 
-# PARÁMETROS DE LIMPIEZA 
+""" PARÁMETROS DE LIMPIEZA """
 UMBRAL_RUIDO = 65    # Máximo desplazamiento (píxeles) permitido desde el centro
 MAX_SUAVIZADO = 5    # Frames para promediar (elimina vibración)
 
@@ -31,7 +31,7 @@ MAX_SUAVIZADO = 5    # Frames para promediar (elimina vibración)
 buffer_L = deque(maxlen=MAX_SUAVIZADO)
 buffer_R = deque(maxlen=MAX_SUAVIZADO)
 
-# CONFIGURACIÓN DE ESCALA
+""" CONFIGURACIÓN DE ESCALA """
 GANANCIA_BASE = 2.2          # Ganancia principal más estable
 OJO_REFERENCIA_PX = 60.0     # Tamaño esperado del ojo
 
@@ -59,7 +59,6 @@ trajectory_R = []
 Se establecen las dimensiones de un "cubo" virtual de datos
 de 256x256 (espacio XY) por 30 (tiempo = 1 segundo a 30 FPS).
 """
-
 # 1. Decaimiento
 volume_decay_L = np.zeros((VOLUME_X, VOLUME_Y, VOLUME_Z), dtype=np.float32)
 volume_decay_R = np.zeros((VOLUME_X, VOLUME_Y, VOLUME_Z), dtype=np.float32)
@@ -76,7 +75,6 @@ frame_index = 0
 
 
 # FUNCIONES AUXILIARES
-
 def closest_iris(eye, irises):
     """ 
     Asegura que cada iris detectado se asigne correctamente al ojo corres-
@@ -126,7 +124,6 @@ def show_3d(volume_L, volume_R, title):
     Aunque los datos no llenen el volumen completo,
     el espacio visual siempre será 256x256x30.
     """
-
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
 
@@ -150,7 +147,6 @@ def show_3d(volume_L, volume_R, title):
 
 
 # PROYECCIONES 2D CON EJES DEFINIDOS
-
 def build_decay_projection(vol_L, vol_R):
     """
     Calcula la densidad y la actividad sumando ambos volúmenes.
@@ -186,7 +182,6 @@ def build_binary_projection(vol_L, vol_R):
 
 
 # LOOP PRINCIPAL
-
 print("ESC → salir")
 print("S → Visualización de Tensores y Proyecciones")
 
@@ -246,7 +241,7 @@ while True:
         dx_amp = np.clip(dx_amp, -LIMITE_DESPLAZAMIENTO, LIMITE_DESPLAZAMIENTO)
         dy_amp = np.clip(dy_amp, -LIMITE_DESPLAZAMIENTO, LIMITE_DESPLAZAMIENTO)
 
-        # FILTRO DE RUIDO AJUSTADO -
+        # FILTRO DE RUIDO AJUSTADO 
         # El umbral ahora debe ser más flexible debido a la amplificación
         if abs(dx_amp) > LIMITE_DESPLAZAMIENTO or abs(dy_amp) > LIMITE_DESPLAZAMIENTO:
             return
@@ -296,7 +291,6 @@ while True:
         vol_y = np.clip(dy_f + 128, 0, 255)
 
         # 1. Decaimiento 
-        """ Es la imagen funcional para el entrenamiento """
         if z>0:
             vol_decay[:,:,z]=ALPHA*vol_decay[:,:,z-1]
         else:
@@ -342,7 +336,6 @@ while True:
     Se crean copias exactas del estado en ese frame.
     Todas las representaciones usarán el mismo instante temporal.
     """
-
     if key==ord('s'):
 
         # COPIA EXACTA DEL ESTADO ACTUAL 
