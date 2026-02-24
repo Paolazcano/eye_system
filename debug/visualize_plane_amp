@@ -188,7 +188,7 @@ def build_binary_projection(vol_L, vol_R):
 # LOOP PRINCIPAL
 
 print("ESC → salir")
-print("S → Tensor 3D Decaimiento")
+print("S → Visualización de tensores y proyecciones")
 
 while True:
 
